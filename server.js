@@ -4,7 +4,6 @@ require('dotenv').config();
 
 const express = require('express');
 const nodemailer = require('nodemailer');
-const Anthropic = require('@anthropic-ai/sdk');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 
@@ -34,8 +33,55 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// ── Anthropic client ─────────────────────────────────────────────────────────
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// ── DeepSeek client (lightweight fetch, OpenAI-compatible) ────────────────────
+const DEEPSEEK_BASE = 'https://api.deepseek.com';
+const DEEPSEEK_MODEL = 'deepseek-chat';
+
+// ── AI cost control ──────────────────────────────────────────────────────────
+// Per-IP daily message cap  |  Global daily token cap
+const AI_DAILY_IP_LIMIT    = Number(process.env.AI_DAILY_IP_LIMIT)    || 30;   // msgs/day per IP
+const AI_DAILY_TOKEN_LIMIT = Number(process.env.AI_DAILY_TOKEN_LIMIT) || 100_000; // tokens/day total
+
+const usage = {
+  ip: new Map(),       // ip → { count, day }
+  globalTokens: 0,
+  globalDay: new Date().toDateString(),
+};
+
+// Reset daily counters at midnight
+function resetIfNewDay() {
+  const today = new Date().toDateString();
+  if (usage.globalDay !== today) {
+    usage.ip.clear();
+    usage.globalTokens = 0;
+    usage.globalDay = today;
+  }
+}
+
+function ipExceeded(ip) {
+  resetIfNewDay();
+  const today = new Date().toDateString();
+  const rec = usage.ip.get(ip);
+  if (!rec || rec.day !== today) return false;
+  return rec.count >= AI_DAILY_IP_LIMIT;
+}
+
+function recordUsage(ip, tokens) {
+  resetIfNewDay();
+  const today = new Date().toDateString();
+  const rec = usage.ip.get(ip);
+  if (!rec || rec.day !== today) {
+    usage.ip.set(ip, { count: 1, day: today });
+  } else {
+    rec.count++;
+  }
+  usage.globalTokens += tokens;
+}
+
+function globalExceeded() {
+  resetIfNewDay();
+  return usage.globalTokens >= AI_DAILY_TOKEN_LIMIT;
+}
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
@@ -60,21 +106,47 @@ app.post('/api/contact', formLimiter, async (req, res) => {
   }
 
   try {
-    // 1. Generate AI acknowledgement
-    const aiResponse = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 200,
-      messages: [
-        {
-          role: 'user',
-          content: `Write a brief, friendly acknowledgement email reply (3–4 sentences) to ${name} who sent this message: "${message}". Sign off as "The Team". Plain text only.`,
-        },
-      ],
+    // Cost-control gate for contact form AI
+    const ip = req.ip;
+    if (ipExceeded(ip)) {
+      return res.status(429).json({ error: 'Daily limit reached. Please try again tomorrow.' });
+    }
+    if (globalExceeded()) {
+      // Still send the email, just skip the AI-generated reply
+      await transporter.sendMail({
+        from: process.env.SMTP_FROM,
+        to: process.env.SMTP_TO,
+        subject: `New contact form submission from ${name}`,
+        text: `Name: ${name}\nEmail: ${email}\n\nMessage:\n${message}\n\n---\n(AI reply skipped — daily token limit reached)`,
+      });
+      return res.json({ success: true, message: 'Message sent. We will get back to you shortly.' });
+    }
+
+    // 1. Generate AI acknowledgement via DeepSeek
+    const dsResponse = await fetch(`${DEEPSEEK_BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        max_tokens: 200,
+        messages: [
+          {
+            role: 'user',
+            content: `Write a brief, friendly acknowledgement email reply (3–4 sentences) to ${name} who sent this message: "${message}". Sign off as "The Team". Plain text only.`,
+          },
+        ],
+      }),
     });
 
-    const aiReply = aiResponse.content[0].type === 'text'
-      ? aiResponse.content[0].text
-      : 'Thank you for reaching out. We will get back to you shortly.';
+    const dsData = await dsResponse.json();
+    const tokensUsed = dsData.usage?.total_tokens || 0;
+    recordUsage(ip, tokensUsed);
+
+    const aiReply = dsData.choices?.[0]?.message?.content?.trim()
+      || 'Thank you for reaching out. We will get back to you shortly.';
 
     // 2. Send notification to site owner
     await transporter.sendMail({
@@ -100,9 +172,94 @@ app.post('/api/contact', formLimiter, async (req, res) => {
   }
 });
 
+// Rate limit: 6 chat messages per IP per minute (generous for human, tight for bots)
+const chatLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 6,
+  message: { error: 'Too many messages. Please wait a moment.' },
+});
+
+// Chat endpoint: interactive DeepSeek conversation
+app.post('/api/chat', chatLimiter, async (req, res) => {
+  const { message, history } = req.body;
+  const ip = req.ip;
+
+  if (!message || typeof message !== 'string' || message.length > 1000) {
+    return res.status(400).json({ error: 'Message is required (max 1000 chars).' });
+  }
+
+  // ── Cost-control gates ──────────────────────────────────────────────────
+  if (ipExceeded(ip)) {
+    return res.status(429).json({ error: 'You have reached the daily message limit. Please try again tomorrow.' });
+  }
+  if (globalExceeded()) {
+    return res.status(429).json({ error: 'AI chat is temporarily at capacity. Please check back later.' });
+  }
+
+  // Build messages array — keep last 10 turns for context
+  const messages = [
+    { role: 'system', content: 'You are a helpful assistant on a demo landing page. Keep replies concise (2-4 sentences). Be friendly and professional.' },
+    ...(Array.isArray(history) ? history.slice(-10) : []),
+    { role: 'user', content: message },
+  ];
+
+  try {
+    const dsResponse = await fetch(`${DEEPSEEK_BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        max_tokens: 300,
+        messages,
+      }),
+    });
+
+    const dsData = await dsResponse.json();
+
+    if (!dsResponse.ok) {
+      console.error('DeepSeek chat error:', dsData);
+      return res.status(502).json({ error: 'AI service unavailable.' });
+    }
+
+    // Track token usage from DeepSeek's response
+    const tokensUsed = dsData.usage?.total_tokens || 0;
+    recordUsage(ip, tokensUsed);
+
+    const reply = dsData.choices?.[0]?.message?.content?.trim()
+      || 'Sorry, I could not process that.';
+
+    return res.json({ reply });
+
+  } catch (err) {
+    console.error('Chat error:', err.message);
+    return res.status(500).json({ error: 'Something went wrong.' });
+  }
+});
+
 // Health check (useful for deployment monitoring)
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// AI usage stats (admin only — restrict in production with auth middleware)
+app.get('/api/usage', (req, res) => {
+  resetIfNewDay();
+  const activeIPs = [];
+  const today = new Date().toDateString();
+  for (const [ip, rec] of usage.ip) {
+    if (rec.day === today) activeIPs.push({ ip, count: rec.count });
+  }
+  res.json({
+    day: today,
+    activeIPs: activeIPs.length,
+    globalTokensUsed: usage.globalTokens,
+    globalTokenLimit: AI_DAILY_TOKEN_LIMIT,
+    perIPMessageLimit: AI_DAILY_IP_LIMIT,
+    percentUsed: ((usage.globalTokens / AI_DAILY_TOKEN_LIMIT) * 100).toFixed(1) + '%',
+  });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────

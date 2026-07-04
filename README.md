@@ -1,13 +1,13 @@
-# Demo App — Node.js + Express + SMTP + Anthropic API
+# Demo App — Node.js + Express + SMTP + DeepSeek API
 
-Landing page with a contact form that sends SMTP email and generates AI-powered replies via the Anthropic API.
+Landing page with a contact form that sends SMTP email and generates AI-powered replies via the DeepSeek API.
 
 ## Stack
 
 - **Runtime**: Node.js 22 (Docker) / Node.js 18+ (bare metal)
 - **Framework**: Express 4
 - **Email**: Nodemailer (works with Gmail, SendGrid, Mailgun, etc.)
-- **AI**: Anthropic Claude API
+- **AI**: DeepSeek API
 - **Container**: Docker + Docker Compose
 - **Process manager**: PM2 (bare metal only)
 - **Reverse proxy**: Nginx + Let's Encrypt SSL (bare metal) / Dokploy / Caddy / Traefik
@@ -54,7 +54,7 @@ curl http://localhost:3000/health
 3. Set **Build path** to `./` (or `/demo-app` if monorepo)
 4. Dokploy auto-detects the `Dockerfile` and builds it
 5. Add environment variables in the Dokploy UI (copy from `.env.example`):
-   - `PORT`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `SMTP_TO`, `ANTHROPIC_API_KEY`
+   - `PORT`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `SMTP_TO`, `DEEPSEEK_API_KEY`
 6. Set the **port** to `3000` and enable the **public domain** with your domain + SSL
 7. Deploy — Dokploy handles the reverse proxy and SSL automatically
 
@@ -91,7 +91,7 @@ npm install --omit=dev
 
 # Set up environment
 cp .env.example .env
-nano .env   # fill in SMTP and Anthropic credentials
+nano .env   # fill in SMTP and DeepSeek credentials
 
 # Start with PM2
 pm2 start ecosystem.config.js
@@ -145,7 +145,9 @@ curl https://yourdomain.com/health
 | `SMTP_PASS` | SMTP password or app password |
 | `SMTP_FROM` | From address for outgoing emails |
 | `SMTP_TO` | Recipient for contact form notifications |
-| `ANTHROPIC_API_KEY` | Your Anthropic API key |
+| `DEEPSEEK_API_KEY` | Your DeepSeek API key |
+| `AI_DAILY_IP_LIMIT` | Max chat messages per IP per day (default: 30) |
+| `AI_DAILY_TOKEN_LIMIT` | Max total AI tokens per day across all users (default: 100 000) |
 
 ---
 
@@ -155,14 +157,20 @@ curl https://yourdomain.com/health
 |---|---|---|
 | `GET` | `/` | Landing page |
 | `POST` | `/api/contact` | Submit contact form |
+| `POST` | `/api/chat` | Interactive DeepSeek chat |
 | `GET` | `/health` | Health check |
+| `GET` | `/api/usage` | AI token usage stats (today) |
 
 ---
 
-## Security features
+## Security & cost control
 
-- Rate limiting: 5 requests per IP per 15 minutes on `/api/contact`
+- Rate limiting: 5 form submissions per IP per 15 min, 6 chat messages per IP per min
+- Per-IP daily cap: 30 AI messages per IP per day (configurable)
+- Global daily token budget: 100 000 tokens/day across all users (configurable)
+- Real token tracking from DeepSeek's `usage.total_tokens` — not estimated
+- Daily counters auto-reset at midnight (in-memory, no persistence needed)
 - Input validation and sanitisation on all form fields
 - Environment variables for all secrets (never hardcoded)
-- Nginx as reverse proxy (app never exposed directly)
-- SSL enforced via Let's Encrypt
+- Docker runs as non-root user
+- SSL enforced via Let's Encrypt (bare metal) or Dokploy auto-SSL
