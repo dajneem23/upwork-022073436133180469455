@@ -1,0 +1,12 @@
+node_modules/
+.env
+*.log
+.git
+.gitignore
+.DS_Store
+README.md
+nginx.conf
+ecosystem.config.js
+docker-compose.yml
+Dockerfile
+.dockerignore
