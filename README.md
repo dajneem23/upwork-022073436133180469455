@@ -6,7 +6,7 @@ Landing page with a contact form that sends SMTP email and generates AI-powered 
 
 - **Runtime**: Node.js 22 (Docker) / Node.js 18+ (bare metal)
 - **Framework**: Express 4
-- **Email**: Nodemailer (works with Gmail, SendGrid, Mailgun, etc.)
+- **Email**: Resend SMTP (100 free emails/day) via Nodemailer
 - **AI**: DeepSeek API
 - **Container**: Docker + Docker Compose
 - **Process manager**: PM2 (bare metal only)
@@ -139,10 +139,10 @@ curl https://yourdomain.com/health
 | Variable | Description |
 |---|---|
 | `PORT` | Port the app listens on (default: 3000) |
-| `SMTP_HOST` | SMTP server hostname |
-| `SMTP_PORT` | SMTP port (587 for TLS, 465 for SSL) |
-| `SMTP_USER` | SMTP username / email |
-| `SMTP_PASS` | SMTP password or app password |
+| `SMTP_HOST` | SMTP server (`smtp.resend.com`) |
+| `SMTP_PORT` | SMTP port (`587`) |
+| `SMTP_USER` | SMTP username (`resend`) |
+| `SMTP_PASS` | Your Resend API key (`re_...`) |
 | `SMTP_FROM` | From address for outgoing emails |
 | `SMTP_TO` | Recipient for contact form notifications |
 | `DEEPSEEK_API_KEY` | Your DeepSeek API key |

@@ -33,6 +33,119 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// ── Email templates ──────────────────────────────────────────────────────────
+// Resend strips embedded <style>, so everything is inlined
+
+function baseEmail({ title, subtitle, content, accentColor = '#1a1a1a' }) {
+  const year = new Date().getFullYear();
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+</head>
+<body style="margin:0;padding:0;background:#f5f5f3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f3;padding:2rem 0;">
+    <tr>
+      <td align="center">
+        <!-- Card -->
+        <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#fff;border-radius:10px;border:1px solid #eaeaea;overflow:hidden;">
+
+          <!-- Header -->
+          <tr>
+            <td style="padding:1.75rem 2rem 0.75rem;text-align:center;">
+              <div style="font-size:1.1rem;font-weight:700;color:${accentColor};letter-spacing:-0.02em;">
+                Demo App
+              </div>
+            </td>
+          </tr>
+          ${title ? `
+          <tr>
+            <td style="padding:0 2rem 0.25rem;text-align:center;">
+              <h2 style="margin:0;font-size:1.3rem;font-weight:600;color:#1a1a1a;">${title}</h2>
+            </td>
+          </tr>` : ''}
+          ${subtitle ? `
+          <tr>
+            <td style="padding:0.25rem 2rem 1.25rem;text-align:center;">
+              <p style="margin:0;font-size:0.875rem;color:#888;">${subtitle}</p>
+            </td>
+          </tr>` : ''}
+
+          <!-- Divider -->
+          <tr><td style="padding:0 2rem;"><div style="border-top:1px solid #eee;"></div></td></tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:1.5rem 2rem;font-size:0.925rem;line-height:1.65;color:#333;">
+              ${content}
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:1rem 2rem;background:#fafaf9;text-align:center;border-top:1px solid #eee;">
+              <p style="margin:0;font-size:0.75rem;color:#aaa;">
+                © ${year} Demo App &nbsp;·&nbsp; Sent via <span style="color:#888;">Resend</span>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+// User-facing: AI acknowledgement reply
+function userReplyEmail(aiReplyHtml) {
+  return baseEmail({
+    title: 'We received your message!',
+    subtitle: 'Thanks for reaching out — here\'s a quick note back.',
+    content: `
+      <div style="background:#fafaf9;border-radius:8px;padding:1.25rem 1.5rem;border:1px solid #eee;">
+        ${aiReplyHtml}
+      </div>
+      <p style="margin-top:1.25rem;color:#888;font-size:0.85rem;">
+        If you need anything else, just reply to this email or use the chat widget on our site.
+      </p>`,
+  });
+}
+
+// Owner-facing: notification of a new form submission
+function ownerNotificationEmail({ name, email, message, aiReplyHtml }) {
+  return baseEmail({
+    title: 'New contact form submission',
+    subtitle: `${new Date().toLocaleString('en-GB', { dateStyle: 'long', timeStyle: 'short' })}`,
+    accentColor: '#2563eb',
+    content: `
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:1rem;">
+        <tr><td style="padding:0.35rem 0;font-weight:600;color:#1a1a1a;width:70px;">Name</td><td style="padding:0.35rem 0;color:#333;">${escapeHtml(name)}</td></tr>
+        <tr><td style="padding:0.35rem 0;font-weight:600;color:#1a1a1a;">Email</td><td style="padding:0.35rem 0;color:#2563eb;"><a href="mailto:${escapeHtml(email)}" style="color:#2563eb;">${escapeHtml(email)}</a></td></tr>
+      </table>
+
+      <div style="background:#fafaf9;border-radius:8px;padding:1.25rem 1.5rem;border:1px solid #eee;margin-bottom:1.25rem;">
+        <p style="margin:0 0 0.5rem;font-weight:600;font-size:0.8rem;color:#888;text-transform:uppercase;letter-spacing:0.04em;">Message</p>
+        <p style="margin:0;white-space:pre-wrap;color:#333;">${escapeHtml(message)}</p>
+      </div>
+
+      <div style="background:#f0f7ff;border-radius:8px;padding:1.25rem 1.5rem;border:1px solid #d6e8ff;">
+        <p style="margin:0 0 0.5rem;font-weight:600;font-size:0.8rem;color:#2563eb;text-transform:uppercase;letter-spacing:0.04em;">AI auto-reply sent to user</p>
+        <p style="margin:0;color:#1e40af;">${aiReplyHtml}</p>
+      </div>`,
+  });
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 // ── DeepSeek client (lightweight fetch, OpenAI-compatible) ────────────────────
 const DEEPSEEK_BASE = 'https://api.deepseek.com';
 const DEEPSEEK_MODEL = 'deepseek-chat';
@@ -117,7 +230,10 @@ app.post('/api/contact', formLimiter, async (req, res) => {
         from: process.env.SMTP_FROM,
         to: process.env.SMTP_TO,
         subject: `New contact form submission from ${name}`,
-        text: `Name: ${name}\nEmail: ${email}\n\nMessage:\n${message}\n\n---\n(AI reply skipped — daily token limit reached)`,
+        html: ownerNotificationEmail({
+          name, email, message,
+          aiReplyHtml: '<em>AI reply skipped — daily token limit reached.</em>',
+        }),
       });
       return res.json({ success: true, message: 'Message sent. We will get back to you shortly.' });
     }
@@ -135,7 +251,7 @@ app.post('/api/contact', formLimiter, async (req, res) => {
         messages: [
           {
             role: 'user',
-            content: `Write a brief, friendly acknowledgement email reply (3–4 sentences) to ${name} who sent this message: "${message}". Sign off as "The Team". Plain text only.`,
+            content: `Write a brief, friendly email reply (3–4 sentences) to ${name} who sent this message: "${message}". Sign off as "<strong>The Team</strong>". Use simple HTML: <p> for paragraphs and <strong> for emphasis. Return the body content only — no wrapper tags like <html> or <body>.`,
           },
         ],
       }),
@@ -153,7 +269,7 @@ app.post('/api/contact', formLimiter, async (req, res) => {
       from: process.env.SMTP_FROM,
       to: process.env.SMTP_TO,
       subject: `New contact form submission from ${name}`,
-      text: `Name: ${name}\nEmail: ${email}\n\nMessage:\n${message}\n\n---\nAI auto-reply sent to user:\n${aiReply}`,
+      html: ownerNotificationEmail({ name, email, message, aiReplyHtml: aiReply }),
     });
 
     // 3. Send AI-generated acknowledgement to user
@@ -161,7 +277,7 @@ app.post('/api/contact', formLimiter, async (req, res) => {
       from: process.env.SMTP_FROM,
       to: email,
       subject: 'We received your message',
-      text: aiReply,
+      html: userReplyEmail(aiReply),
     });
 
     return res.json({ success: true, message: 'Message sent. Check your inbox for a confirmation.' });

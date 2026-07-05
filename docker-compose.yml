@@ -11,12 +11,12 @@ services:
     # or use Dokploy's built-in env management.
     # environment:
     #   - PORT=3000
-    #   - SMTP_HOST=smtp.gmail.com
+    #   - SMTP_HOST=smtp.resend.com
     #   - SMTP_PORT=587
-    #   - SMTP_USER=your@gmail.com
-    #   - SMTP_PASS=your-app-password
-    #   - SMTP_FROM=your@gmail.com
-    #   - SMTP_TO=recipient@gmail.com
+    #   - SMTP_USER=resend
+    #   - SMTP_PASS=re_xxxxxxxx
+    #   - SMTP_FROM=you@yourdomain.com
+    #   - SMTP_TO=you@yourdomain.com
     #   - DEEPSEEK_API_KEY=sk-...
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
